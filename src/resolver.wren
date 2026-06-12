@@ -1,5 +1,7 @@
 // resolver.wren — Recursive dependency resolver.
 // Walks the rule graph, resolves params, instantiates classes/factories.
+// NOTE: calls/lazyCalls are NOT supported in v1 — Wren has no dynamic
+// method invocation. Use Factory seal for post-construction setup.
 
 import "rule" for Rule
 import "seal" for Seal, Interface, Value, Factory, ClassFactory
@@ -9,12 +11,13 @@ class Resolver {
     _container = container
   }
   
-  // Resolve a dependency by key.
-  // stack: list of keys currently being resolved (for cycle detection).
-  resolve(key, stack) {
-    // Cycle detection
+  // Public: resolve a dependency by key.
+  resolve(key) { resolveWithStack(key, []) }
+  
+  // Internal: resolve with cycle-detection stack.
+  resolveWithStack(key, stack) {
     if (stack.contains(key)) {
-      Fiber.abort("Cyclic dependency detected: %(key) in stack %(stack)")
+      Fiber.abort("Cyclic dependency detected: key '%(key)' already in stack %(stack)")
     }
     
     var rule = _container.rule(key)
@@ -22,32 +25,27 @@ class Resolver {
       Fiber.abort("No rule found for key: %(key)")
     }
     
-    // Apply rule inheritance
     rule = mergeInheritedRule(rule)
     
-    // Singleton: return pre-built instance directly
+    // Singleton: pre-built instance, return as-is
     if (rule.singleton != null) {
       return rule.singleton
     }
     
-    // Shared: check cache first
+    // Shared: check cache
     var cache = _container.cache
     if (rule.shared && cache.has(key)) {
       return cache.get(key)
     }
     
-    // Resolve params recursively
     var resolvedParams = resolveParams(rule.params, stack + [key])
     
-    // Apply substitutions to map-style params
     if (rule.substitutions.count > 0) {
       resolvedParams = applySubstitutions(resolvedParams, rule.substitutions)
     }
     
-    // Instantiate
     var instance = instantiate(rule, resolvedParams)
     
-    // Cache if shared
     if (rule.shared) {
       cache.set(key, instance)
     }
@@ -67,20 +65,17 @@ class Resolver {
   // Resolve a single param based on its type.
   resolveParam(param, stack) {
     if (param is String) {
-      // Raw string = rule key to resolve recursively
-      return resolve(param, stack)
+      return resolveWithStack(param, stack)
     } else if (param is Interface) {
-      return resolve(param.key, stack)
+      return resolveWithStack(param.key, stack)
     } else if (param is Value) {
       return param.value
     } else if (param is Factory) {
-      // Factory callback takes no args and returns instance
+      // Factory callback receives resolved params if configured
       return param.callback.call()
     } else if (param is ClassFactory) {
-      // Instantiate class with no params (ClassFactory is for simple instantiation)
       return instantiateClass(param.classDef, [])
     } else {
-      // Pass through as-is (literal values: Num, Bool, List, Map, etc.)
       return param
     }
   }
@@ -90,13 +85,10 @@ class Resolver {
     if (rule.classDef != null) {
       return instantiateClass(rule.classDef, params)
     }
-    
-    // No classDef — return null (use a factory if you need custom instantiation)
     return null
   }
   
-  // Instantiate a class with params, handling arity (Wren has no spread operator).
-  // Supports 0–4 params. Use a factory function for more.
+  // Wren has no spread operator — handle arities 0–4.
   instantiateClass(classDef, params) {
     if (params.count == 0) {
       return classDef.new()
@@ -109,7 +101,7 @@ class Resolver {
     } else if (params.count == 4) {
       return classDef.new(params[0], params[1], params[2], params[3])
     } else {
-      Fiber.abort("Class instantiation supports max 4 params, got %(params.count). Use a Factory seal instead.")
+      Fiber.abort("Instantiation supports max 4 params, got %(params.count). Use Factory seal instead.")
     }
   }
   
@@ -138,8 +130,7 @@ class Resolver {
     
     // Collection fields: concatenate (parent first, then child)
     merged.params = parent.params + rule.params
-    merged.calls = parent.calls + rule.calls
-    merged.lazyCalls = parent.lazyCalls + rule.lazyCalls
+    // calls/lazyCalls retained on Rule for v1.5, not processed by resolver v1
     merged.inheritMixins = parent.inheritMixins + rule.inheritMixins
     
     // Substitutions: child overwrites parent keys
@@ -150,15 +141,13 @@ class Resolver {
       merged.substitutions[entry.key] = entry.value
     }
     
-    // Preserve child's inheritInstanceOf (or inherit from parent's parent)
+    // Preserve parent's inheritance chain
     merged.inheritInstanceOf = parent.inheritInstanceOf
     
     return merged
   }
   
-  // Apply substitutions to map-style params.
   applySubstitutions(params, substitutions) {
-    // If first param is a Map, overlay substitution values
     if (params.count > 0 && params[0] is Map) {
       var map = params[0]
       for (entry in substitutions) {
