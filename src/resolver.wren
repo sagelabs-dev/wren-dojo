@@ -3,7 +3,8 @@
 // Walks the rule graph, resolves params, instantiates classes/factories.
 // Supports: classDef params, String/Interface resolution, Value pass-through,
 // Factory callbacks, ClassFactory instantiation, rule inheritance, substitutions,
-// shared/singleton lifecycles, and cyclic dependency detection.
+// shared/singleton lifecycles, cyclic dependency detection, and fiber-based async
+// resolution for params marked with asyncResolve.
 //
 // NOTE: calls/lazyCalls are NOT supported in v1 — Wren has no dynamic
 // method invocation by string. Use Factory seal for post-construction setup.
@@ -46,8 +47,9 @@ class Resolver {
       return cache.get(key)
     }
 
-    // Resolve all params recursively through the dependency graph
-    var resolvedParams = resolveParams(rule.params, stack + [key])
+    // Resolve all params recursively through the dependency graph.
+    // If asyncResolve is enabled, params are resolved in parallel via fibers.
+    var resolvedParams = resolveParams(rule.params, stack + [key], rule.asyncResolve)
 
     // Apply substitution overrides if configured
     if (rule.substitutions.count > 0) {
@@ -66,13 +68,51 @@ class Resolver {
   }
 
   // Resolve a list of params.
-  // Iterates over params, calling resolveParam for each.
-  resolveParams(params, stack) {
-    var resolved = []
-    for (param in params) {
-      resolved.add(resolveParam(param, stack))
+  // If async is true, each param is resolved in its own fiber for parallel execution.
+  resolveParams(params, stack, async) {
+    if (!async) {
+      // Synchronous path: resolve each param sequentially
+      var resolved = []
+      for (param in params) {
+        resolved.add(resolveParam(param, stack))
+      }
+      return resolved
     }
-    return resolved
+
+    // Async path: spin up a fiber per param, run them cooperatively
+    return resolveParamsAsync(params, stack)
+  }
+
+  // Parallel param resolution via fibers.
+  // Creates one fiber per param. Each fiber resolves its param independently.
+  // Fibers are resumed round-robin until all complete.
+  resolveParamsAsync(params, stack) {
+    var fibers = []
+    var results = List.filled(params.count, null)
+
+    // Spawn a fiber for each param
+    for (i in 0...params.count) {
+      var param = params[i]
+      var fiber = Fiber.new {
+        results[i] = resolveParam(param, stack)
+      }
+      fiber.call()  // start the fiber
+      fibers.add(fiber)
+    }
+
+    // Round-robin resume until all fibers are done
+    var pending = true
+    while (pending) {
+      pending = false
+      for (fiber in fibers) {
+        if (!fiber.isDone) {
+          fiber.transfer()  // resume this fiber
+          pending = true
+        }
+      }
+    }
+
+    return results.toList
   }
 
   // Resolve a single param based on its type.
@@ -105,21 +145,33 @@ class Resolver {
     return null
   }
 
-  // Wren has no spread operator — handle arities 0–4 explicitly.
-  // 5+ params is an error; use Factory seal instead.
+  // Wren has no spread operator — handle arities 0–8 explicitly.
+  // For constructors needing >8 params, use a Map (config object) as a single
+  // param and destructure inside the constructor. The Factory seal is also
+  // available for arbitrary-arity creation via closure.
   instantiateClass(classDef, params) {
-    if (params.count == 0) {
+    var n = params.count
+    if (n == 0) {
       return classDef.new()
-    } else if (params.count == 1) {
+    } else if (n == 1) {
       return classDef.new(params[0])
-    } else if (params.count == 2) {
+    } else if (n == 2) {
       return classDef.new(params[0], params[1])
-    } else if (params.count == 3) {
+    } else if (n == 3) {
       return classDef.new(params[0], params[1], params[2])
-    } else if (params.count == 4) {
+    } else if (n == 4) {
       return classDef.new(params[0], params[1], params[2], params[3])
+    } else if (n == 5) {
+      return classDef.new(params[0], params[1], params[2], params[3], params[4])
+    } else if (n == 6) {
+      return classDef.new(params[0], params[1], params[2], params[3], params[4], params[5])
+    } else if (n == 7) {
+      return classDef.new(params[0], params[1], params[2], params[3], params[4], params[5], params[6])
+    } else if (n == 8) {
+      return classDef.new(params[0], params[1], params[2], params[3], params[4], params[5], params[6], params[7])
     } else {
-      Fiber.abort("Instantiation supports max 4 params, got %(params.count). Use Factory seal instead.")
+      Fiber.abort("Instantiation supports max 8 params, got %(n). " +
+        "Use a Map (config object) as a single param, or the Factory seal for arbitrary arity.")
     }
   }
 
