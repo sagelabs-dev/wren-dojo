@@ -1,9 +1,9 @@
 // container.wren — The dependency injection container.
 // Holds rules, resolves dependencies recursively, manages lifecycle.
 
-import "rule" for Rule
-import "resolver" for Resolver
-import "lifecycle" for InstanceCache
+import "./rule" for Rule
+import "./resolver" for Resolver
+import "./lifecycle" for InstanceCache
 
 class Container {
   construct new() {
@@ -29,7 +29,7 @@ class Container {
   
   // Resolve a dependency by key.
   get(key) {
-    return _resolver.resolve(key, [])
+    return _resolver.resolve(key)
   }
   
   // Check if a rule exists.

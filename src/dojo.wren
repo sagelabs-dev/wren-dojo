@@ -1,9 +1,9 @@
 // dojo.wren — Public API module for wren-dojo
 // Import this module to access the dependency injection container.
 
-import "container" for Container
-import "rule" for Rule
-import "seal" for Seal, Interface, Value, Factory, ClassFactory
+import "./container" for Container
+import "./rule" for Rule
+import "./seal" for Seal, Interface, Value, Factory, ClassFactory
 
 class Dojo {
   // Create a new Container instance.

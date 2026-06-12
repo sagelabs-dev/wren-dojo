@@ -3,8 +3,8 @@
 // NOTE: calls/lazyCalls are NOT supported in v1 — Wren has no dynamic
 // method invocation. Use Factory seal for post-construction setup.
 
-import "rule" for Rule
-import "seal" for Seal, Interface, Value, Factory, ClassFactory
+import "./rule" for Rule
+import "./seal" for Seal, Interface, Value, Factory, ClassFactory
 
 class Resolver {
   construct new(container) {
@@ -16,7 +16,7 @@ class Resolver {
   
   // Internal: resolve with cycle-detection stack.
   resolveWithStack(key, stack) {
-    if (stack.contains(key)) {
+    if (stack.indexOf(key) != -1) {
       Fiber.abort("Cyclic dependency detected: key '%(key)' already in stack %(stack)")
     }
     
