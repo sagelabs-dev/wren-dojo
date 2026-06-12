@@ -95,6 +95,7 @@ A `Rule` tells the resolver how to construct a dependency:
 | `params` | `List` | Constructor arguments |
 | `shared` | `Bool` | Resolve once, cache forever |
 | `singleton` | `Object` | Use this pre-built instance |
+| `asyncResolve` | `Bool` | Resolve params in parallel via fibers (v1.5) |
 | `inheritInstanceOf` | `String` | Inherit from another rule |
 | `substitutions` | `Map` | Override param values |
 
@@ -147,6 +148,103 @@ var got = container.get("Logger")
 Expect.that(got).toBe(logger)  // exact same instance
 ```
 
+## Arity & The Config Object Pattern
+
+Wren has no spread operator. The resolver supports constructors with
+**0 through 8 parameters**, dispatching to the correct `new()` overload.
+
+```wren
+class Service {
+  construct new(a, b, c, d, e, f, g, h) {
+    // all 8 params received
+  }
+}
+```
+
+For constructors needing more than 8 params, use a **Map (config object)**
+as a single param and destructure inside the constructor:
+
+```wren
+class BigService {
+  construct new(config) {
+    _host = config["host"]
+    _port = config["port"]
+    // ... destructure as needed
+  }
+}
+
+container.addRule("BigService", Rule.new()
+  .classDef = BigService
+  .params = [Value.new({
+    "host": "localhost",
+    "port": 8080,
+    "debug": true,
+    "timeout": 30
+  })]
+)
+```
+
+The `Value` seal passes the Map through as-is. This is the canonical
+Wren idiom for complex configuration.
+
+Alternatively, the `Factory` seal supports arbitrary-arity creation
+via closure:
+
+```wren
+container.addRule("BigService", Rule.new()
+  .params = [Factory.new {
+    return BigService.new(a, b, c, d, e, f, g, h, i, j)
+  }]
+)
+```
+
+## Async Resolution (v1.5)
+
+Wren has no Promises. Instead, wren-dojo uses Wren's native **fibers**
+for cooperative multitasking during resolution.
+
+Enable async on a per-rule basis:
+
+```wren
+container.addRule("Service", Rule.new()
+  .classDef = MyService
+  .params = [Interface.new("Database"), Interface.new("Logger")]
+  .asyncResolve = true
+)
+```
+
+When `asyncResolve` is true, each param is resolved in its own fiber.
+Fibers run cooperatively (round-robin resume) until all complete, then
+the instance is constructed. The `get()` call blocks the calling fiber
+until resolution finishes — not the OS thread.
+
+This is especially useful when:
+- Multiple independent params can resolve in parallel
+- Params perform I/O (when Wren gains I/O fiber yield points)
+- Foreign methods perform blocking operations
+
+### Async + Shared
+
+Shared lifecycle works correctly with async resolution. If a param resolves
+to a shared instance, all concurrent fibers requesting that instance
+receive the same cached object:
+
+```wren
+container.addRule("Logger", Rule.new()
+  .classDef = Logger
+  .shared = true
+)
+
+container.addRule("Service", Rule.new()
+  .classDef = Service
+  .params = [Interface.new("Logger"), Interface.new("Logger")]
+  .asyncResolve = true
+)
+
+var svc = container.get("Service")
+// svc.logger and svc.repo are the SAME shared Logger instance
+```
+
 ## Rule Inheritance
 
 Rules can inherit from other rules via `inheritInstanceOf`:
@@ -164,7 +262,7 @@ container.addRule("Extended", Rule.new()
 ```
 
 Inherited rules merge:
-- **Scalar fields**: child overrides parent (`classDef`, `shared`, etc.)
+- **Scalar fields**: child overrides parent (`classDef`, `shared`, `asyncResolve`, etc.)
 - **Collections**: concatenated (`params`, `inheritMixins`)
 - **Maps**: child overwrites parent keys (`substitutions`)
 
@@ -174,16 +272,10 @@ The resolver uses Wren's fiber-based error handling:
 
 - **Missing rule** → `Fiber.abort("No rule found for key: ...")`
 - **Cyclic dependency** → `Fiber.abort("Cyclic dependency detected: ...")`
-- **Constructor arity mismatch** → `Fiber.abort("Instantiation supports max 4 params...")`
+- **Constructor arity overflow** → `Fiber.abort("Instantiation supports max 8 params...")`
+- **Missing inherited rule** → `Fiber.abort("Inherit rule not found: ...")`
 
 Wrap resolution in `Fiber.new { ... }.try()` to capture errors gracefully.
-
-## Async Resolution (v1.5)
-
-Wren has no Promises.  Instead, wren-dojo v1.5 will use Wren's native
-fibers for cooperative multitasking during resolution.  For now,
-resolution is synchronous and blocking — appropriate for Wren's
-single-threaded execution model.
 
 ## Module Layout
 
@@ -193,7 +285,7 @@ wren-dojo/
 │   ├── dojo.wren          # Public API — Dojo static helpers
 │   ├── container.wren     # Container class — registry + entry point
 │   ├── rule.wren          # Rule value object
-│   ├── resolver.wren      # Recursive dependency walker + builder
+│   ├── resolver.wren      # Recursive dependency walker + async fiber scheduler
 │   ├── lifecycle.wren     # InstanceCache for shared/singleton
 │   └── seal.wren          # Seal markers: Interface, Value, Factory, ClassFactory
 ├── test/
@@ -201,10 +293,10 @@ wren-dojo/
 │   ├── test_seals.wren         # Seal type tests
 │   ├── test_lifecycle.wren     # Shared, singleton, cache tests
 │   ├── test_inheritance.wren   # Rule inheritance tests
-│   ├── test_resolver.wren      # Deep resolution + error tests
-│   ├── test_dojo_api.wren      # Public API tests
 │   ├── test_error_handling.wren # Error condition tests
-│   └── test_e2e.wren           # Full application simulation
+│   ├── test_dojo_api.wren      # Public API tests
+│   ├── test_e2e.wren           # Full application simulation
+│   └── test_v15.wren           # Arity, config objects, async tests
 ├── README.md
 └── LICENSE
 ```
@@ -217,7 +309,26 @@ lightweight test framework for Wren Console.
 ```bash
 cd wren-dojo
 wrenc test/test_container.wren
+wrenc test/test_v15.wren
 ```
+
+**Current status: 61 tests passing across 8 test files.**
+
+## Feature Matrix
+
+| Feature | Status | Since |
+|---------|--------|-------|
+| Container, Rule, Seal | ✅ | v1.0 |
+| Recursive resolution | ✅ | v1.0 |
+| Shared / Singleton | ✅ | v1.0 |
+| Substitutions | ✅ | v1.0 |
+| Rule inheritance | ✅ | v1.0 |
+| Interface type checking | ✅ | v1.0 |
+| Arity 0–8 dispatch | ✅ | v1.5 |
+| Config object pattern | ✅ | v1.5 |
+| Async resolution (fibers) | ✅ | v1.5 |
+| Calls / lazyCalls | ❌ | v2.0 — blocked on dynamic method invocation |
+| sharedInTree | ❌ | v2.0 |
 
 ## Acknowledgements
 
