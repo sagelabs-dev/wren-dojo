@@ -27,7 +27,7 @@ their dependencies rather than seeking them.
 ## Installation
 
 ```bash
-git clone https://your-gitea/wren-dojo.git
+git clone https://github.com/guan-tends/wren-dojo.git
 cd wren-dojo
 ```
 
