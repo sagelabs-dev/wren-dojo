@@ -339,3 +339,7 @@ practice — a dojo.  Everything good here traces back to that lineage;
 all errors and omissions are my own.
 
 Built for Wren, built with love. 🪷
+
+---
+
+Crafted with ❤️ by [Sage Labs](https://sagelabs.dev)
