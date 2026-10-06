@@ -1,0 +1,30 @@
+name: Gitea CI
+# Gitea-native CI. Runner labels: self-hosted,linux,docker.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  ci:
+    runs-on: self-hosted
+    container:
+      image: node:22
+    steps:
+      - name: Checkout (with submodules)
+        run: |
+          git config --global --add safe.directory '*'
+          git clone --depth 1 --recurse-submodules "http://guan:${{ github.token }}@gitea:3000/guan/wren-dojo.git" .repo
+      - name: Install wren-console
+        working-directory: .repo
+        run: |
+          curl -sL -o /tmp/wren.tar.gz https://github.com/joshgoebel/wren-console/releases/download/v0.3.1/wren-console-v0.3.1-linux.tar.gz
+          mkdir -p /tmp/wren && tar xzf /tmp/wren.tar.gz -C /tmp/wren && chmod +x /tmp/wren/bin/wrenc
+          echo /tmp/wren/bin >> $GITHUB_PATH
+      - name: Run test suite
+        working-directory: .repo
+        run: |
+          fail=0
+          for t in test/test_*.wren; do echo "-- $t"; if ! /tmp/wren/bin/wrenc "$t"; then fail=1; fi; done
+          exit $fail
